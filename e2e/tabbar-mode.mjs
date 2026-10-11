@@ -5,9 +5,8 @@
 //   3. Both modes share the SAME open/close tab set (openTabs): same tabs,
 //      close buttons in BOTH modes, close works in 最近活跃 too
 //   4. Ordering differs: 标准 = open order (tab-appearance order); 最近活跃
-//      = colored zone (黄/绿/蓝) first, idle after — each zone by updatedAt
-//      desc, newest-active leftmost in BOTH zones (14:10 rule); all-idle
-//      degenerates to pure sidebar recency. Mode + tabs persist across reload
+//      = pure recency (updatedAt desc, newest leftmost) — status dots never
+//      reorder tabs. Mode + tabs persist across reload
 //   5. Feature toggle off → host strip hidden instantly (attribute gate);
 //      toggle cycles produce NO React hook-count pageerrors (hooks-order fix)
 // Concurrency: run-level mutex is structural (2026-09-25) — guard() re-execs
@@ -267,14 +266,14 @@ try {
   // Version gate: a stale client build (concurrent stash → HMR rollback)
   // fails HERE with the old hint text, naming the root cause directly.
   check((recent1.hint || '').includes('最近活跃'), 'hint text follows the mode');
-  check((recent1.hint || '').includes('区内均最新最左'), 'hint describes the 14:10 unified zone ordering');
+  check((recent1.hint || '').includes('按活跃时间排序'), 'hint describes pure recency ordering');
   // Close the settings dialog before touching sidebar/composer.
   for (let i = 0; i < 10; i++) {
     await page.keyboard.press('Escape');
     await page.waitForTimeout(300);
     if (await page.evaluate(() => !document.querySelector('[role="dialog"]'))) break;
   }
-  check(await page.evaluate(() => !document.querySelector('[role="dialog"]')), 'settings dialog closed before colored-zone work');
+  check(await page.evaluate(() => !document.querySelector('[role="dialog"]')), 'settings dialog closed before ordering work');
   const snapE = await atomicSnapshot();
   check(!!snapE, 'atomic snapshot: tabs + dots + sidebar rows in one tick');
   const recentTitles = snapE ? snapE.tabs : [];
@@ -283,31 +282,22 @@ try {
   check(dots.every(d => ['', 'warning', 'running', 'completed'].includes(d)), 'indicator classes within known set');
 
   const allIdle = dots.every(d => d === '');
-  if (allIdle) {
-    // All-idle degenerates the two-group sort to pure updatedAt desc. The
-    // sidebar is recency-sorted (top = newest), so the tabs' sidebar
-    // positions must be STRICTLY INCREASING left→right.
-    const pos = recentTitles.map(t => snapE.rows.findIndex(r => rowTitle(r) === t));
-    console.log('  recent tab sidebar positions (atomic):', JSON.stringify(pos));
-    check(pos.length === 6 && pos.every(p => p !== -1) && pos.every((p, i) => i === 0 || pos[i - 1] < p),
-      '最近活跃 order = activity order (atomic snapshot: sidebar positions strictly increasing, newest leftmost)');
-  } else {
-    // Colored tabs present: verify grouping only — every colored tab left
-    // of every idle tab (zone directions verified by code review).
-    const firstIdle = dots.findIndex(d => d === '');
-    const grouped = dots.every((d, i) => (d !== '' ? firstIdle === -1 || i < firstIdle : i >= firstIdle));
-    check(grouped, '最近活跃 groups colored states before idle tabs');
-  }
+  // 最近活跃 = pure recency: status dots (colored or not) never reorder tabs.
+  // The sidebar is recency-sorted (top = newest), so the tabs' sidebar
+  // positions must be STRICTLY INCREASING left→right — with or without dots.
+  const pos = recentTitles.map(t => snapE.rows.findIndex(r => rowTitle(r) === t));
+  console.log('  recent tab sidebar positions (atomic):', JSON.stringify(pos));
+  check(pos.length === 6 && pos.every(p => p !== -1) && pos.every((p, i) => i === 0 || pos[i - 1] < p),
+    `最近活跃 order = activity order regardless of status dots (positions ${JSON.stringify(pos)})`);
   check(ordersDiffer || !allIdle, 'order assertion is discriminating (open order ≠ sidebar top order)');
 
-  console.log('=== E2. Colored zone: running tabs jump left, newest-leftmost (14:10 rule) ===');
-  // Pins the NEW direction of the colored zone with REAL running (blue)
-  // tabs — previously "cannot fake in e2e, covered by code review" territory.
+  console.log('=== E2. Recency: the two oldest tabs jump left once they get activity ===');
+  // Discriminates recency from open order with REAL running (blue) tabs.
   // X = oldest seeded tab, Y = second-oldest; BOTH get long-generation
   // prompts so both are still RUNNING while we assert (a quick "hi" would
-  // complete, and a completed CURRENT session shows no dot and may drop
-  // out of the colored zone — racy). Y is sent AFTER X → Y = newer
-  // activity → expected order [Y, X, ...idle keeps current recency...].
+  // complete, and a completed CURRENT session shows no dot — racy). Y is
+  // sent AFTER X → Y = newer activity → expected order [Y, X, ...rest
+  // keeps its own recency order].
   const e2Closed = [];
   if (allIdle && recentTitles.length >= 4) {
     const X = recentTitles[recentTitles.length - 1];
@@ -380,11 +370,11 @@ try {
     const e2Dots = snap2 ? snap2.dots : [];
     console.log('  e2:', JSON.stringify({ e2Titles, e2Dots }));
     check(e2Dots[0] !== '' && e2Dots[1] !== '', `both messaged tabs are colored (running): [${e2Dots[0]}, ${e2Dots[1]}]`);
-    check(e2Titles[0] === Y && e2Titles[1] === X, `colored zone newest-leftmost: expected [${Y}, ${X}], got [${e2Titles[0]}, ${e2Titles[1]}]`);
-    check(e2Dots.slice(2).every(d => d === ''), 'colored tabs sit left of every idle tab (zone precedence)');
+    check(e2Titles[0] === Y && e2Titles[1] === X, `newest activity leftmost: expected [${Y}, ${X}], got [${e2Titles[0]}, ${e2Titles[1]}]`);
+    check(e2Dots.slice(2).every(d => d === ''), 'the untouched tabs stay idle (dot state follows activity, not position)');
     const idlePos = e2Titles.slice(2).map(t => snap2.rows.findIndex(r => rowTitle(r) === t));
     check(idlePos.length === 4 && idlePos.every(p => p !== -1) && idlePos.every((p, i) => i === 0 || idlePos[i - 1] < p),
-      'idle zone keeps its recency order behind the colored zone (atomic positions strictly increasing)');
+      'untouched tabs keep their recency order behind the two active ones (positions strictly increasing)');
     // Close the two colored tabs BY TITLE — index-based closes cascade if
     // a retry or concurrent reorder shifted positions. X first (non-
     // active), then Y (current — its close triggers the landing switch).
@@ -404,9 +394,9 @@ try {
     console.log('  back to main flow:', JSON.stringify(backTitles));
     check(backTitles.length === 4, `back to 4 tabs after closing X and Y (${backTitles.length})`);
     check(JSON.stringify([...backTitles].sort()) === JSON.stringify(idleExpected),
-      'remaining tabs = the E idle set (sorted-set equality, tolerant of zone-internal order)');
+      'remaining tabs = the E idle set (sorted-set equality, order-tolerant)');
   } else {
-    console.log('  (colored tabs already present at E — deterministic E2 skipped, grouping check above covers zone precedence)');
+    console.log('  (colored tabs already present at E — deterministic E2 skipped, recency order check above covers it)');
   }
 
   console.log('=== F1. Close the ACTIVE tab IN 最近活跃 (landing check) ===');
