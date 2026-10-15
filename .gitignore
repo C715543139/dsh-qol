@@ -4,3 +4,4 @@ e2e/*.png
 /tmp/
 *.tgz
 .dsh-e2e-home/
+.dsh-worktrees/
